@@ -35,9 +35,12 @@ ipcMain.handle('run-repo2llm', async (event, args) => {
 
         const outputPath = path.join(folderPath, 'repo_prompt.txt');
 
+        // Use python module execution instead of the global command
         const child = spawn(
-            'repo2llm',
+            'python',
             [
+                '-m',
+                'repo2llm.cli',
                 folderPath,
                 '--format',
                 format,
