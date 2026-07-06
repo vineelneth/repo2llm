@@ -1,0 +1,12 @@
+README.md
+pyproject.toml
+repo2llm/__init__.py
+repo2llm/cli.py
+repo2llm/crawler.py
+repo2llm/formatter.py
+repo2llm.egg-info/PKG-INFO
+repo2llm.egg-info/SOURCES.txt
+repo2llm.egg-info/dependency_links.txt
+repo2llm.egg-info/entry_points.txt
+repo2llm.egg-info/requires.txt
+repo2llm.egg-info/top_level.txt

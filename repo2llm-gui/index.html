@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>repo2llm - Codebase Packager</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; background-color: #f4f4f5; color: #18181b; }
+        .container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); max-width: 500px; margin: 0 auto; }
+        h2 { margin-top: 0; }
+        .form-group { margin-bottom: 15px; }
+        button { background: #3b82f6; color: white; border: none; padding: 10px 15px; border-radius: 5px; cursor: pointer; width: 100%; font-size: 16px; }
+        button:hover { background: #2563eb; }
+        #status { margin-top: 15px; font-size: 14px; color: #52525b; white-space: pre-wrap; background: #f8fafc; padding: 10px; border-radius: 4px; display: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>📦 Package Codebase</h2>
+        
+        <div class="form-group">
+            <label>1. Select Repository:</label>
+            <button id="select-folder-btn" style="background: #e2e8f0; color: #000;">Choose Folder...</button>
+            <p id="folder-path" style="font-size: 12px; color: #666;"></p>
+        </div>
+
+        <div class="form-group">
+            <label>2. Output Format:</label>
+            <select id="format-select" style="width: 100%; padding: 8px;">
+                <option value="markdown">Markdown (Best for ChatGPT)</option>
+                <option value="xml">XML (Best for Claude)</option>
+            </select>
+        </div>
+
+        <button id="run-btn">Generate Prompt</button>
+        
+        <div id="status"></div>
+    </div>
+
+    <script src="renderer.js"></script>
+</body>
+</html>

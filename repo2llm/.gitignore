@@ -1,0 +1,28 @@
+# Environments
+venv/
+env/
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+repo2llm.egg-info/
+
+# Node / Electron
+node_modules/
+dist/
+build/
+repo2llm-gui/node_modules/
+
+# OS / Editor
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Output files
+repo_prompt*.txt
+claude_prompt.xml

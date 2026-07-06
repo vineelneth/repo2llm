@@ -1,0 +1,8 @@
+certifi==2026.6.17
+charset-normalizer==3.4.7
+idna==3.18
+pathspec==1.1.1
+regex==2026.6.28
+requests==2.34.2
+tiktoken==0.13.0
+urllib3==2.7.0

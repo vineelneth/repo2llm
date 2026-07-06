@@ -1,0 +1,739 @@
+<repository>
+  <structure>
+repo2llm/
+├── pyproject.toml
+├── README.md
+├── repo2llm/
+    ├── __init__.py
+    ├── cli.py
+    ├── crawler.py
+    ├── formatter.py
+├── repo2llm-gui/
+    ├── index.html
+    ├── main.js
+    ├── package.json
+    ├── renderer.js
+├── repo2llm.egg-info/
+    ├── dependency_links.txt
+    ├── entry_points.txt
+    ├── PKG-INFO
+    ├── requires.txt
+    ├── SOURCES.txt
+    ├── top_level.txt
+├── requirements.txt
+  </structure>
+
+  <files>
+    <file path="pyproject.toml">
+<![CDATA[
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "repo2llm"
+version = "0.1.0"
+description = "Package your entire codebase into a single, LLM-friendly prompt."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "pathspec>=0.11.0",
+    "tiktoken>=0.6.0"
+]
+
+# This is the magic block that creates the global CLI command
+[project.scripts]
+repo2llm = "repo2llm.cli:main"
+]]>
+    </file>
+
+    <file path="README.md">
+<![CDATA[
+# repo2llm 🚀
+
+A lightning-fast CLI utility that packages your entire local repository into a single, highly-compressed text file optimized for massive-context LLMs (like Claude 3.5 Sonnet and GPT-4o).
+
+## Features
+- **Smart Ignore:** Automatically respects your `.gitignore` and strips out bloat (`node_modules`, `.venv`, etc.).
+- **Binary Filtering:** Safely ignores images and compiled binaries.
+- **Visual File Tree:** Injects a macro-level directory map at the top of the prompt to help the LLM understand your architecture.
+- **Format Toggles:** Outputs in Markdown (for GPT) or strict XML (for Claude).
+
+## Installation
+```bash
+pip install repo2llm
+
+# Package the current directory
+repo2llm .
+
+# Package for Claude (uses XML)
+repo2llm . --format xml --out claude_prompt.xml
+]]>
+    </file>
+
+    <file path="requirements.txt">
+<![CDATA[
+certifi==2026.6.17
+charset-normalizer==3.4.7
+idna==3.18
+pathspec==1.1.1
+regex==2026.6.28
+requests==2.34.2
+tiktoken==0.13.0
+urllib3==2.7.0
+
+]]>
+    </file>
+
+    <file path="repo2llm/cli.py">
+<![CDATA[
+import argparse
+import sys
+from pathlib import Path
+import tiktoken
+
+from repo2llm.crawler import crawl_repository
+from repo2llm.formatter import to_markdown, to_xml
+
+def estimate_tokens(text: str, model: str = "gpt-4o") -> int:
+    """
+    Estimates token count using OpenAI's tiktoken.
+    This gives the exact token cost for OpenAI models, and a very close 
+    estimate for Anthropic's Claude.
+    """
+    try:
+        encoding = tiktoken.encoding_for_model(model)
+    except KeyError:
+        # Fallback to standard base encoding if model is unknown
+        encoding = tiktoken.get_encoding("cl100k_base")
+    
+    # allowed_special="all" prevents errors if our code contains strings that look like tokens
+    return len(encoding.encode(text, allowed_special="all"))
+
+def main():
+    # 1. Setup Command Line Arguments
+    parser = argparse.ArgumentParser(
+        description="repo2llm: Package your entire codebase into a single, LLM-friendly prompt."
+    )
+    
+    parser.add_argument(
+        "directory", 
+        type=str, 
+        nargs="?", 
+        default=".", 
+        help="The path to the repository you want to package (defaults to current directory)."
+    )
+    
+    parser.add_argument(
+        "--format", 
+        choices=["markdown", "xml"], 
+        default="markdown", 
+        help="The output format (markdown or xml). XML is highly recommended for Claude."
+    )
+    
+    parser.add_argument(
+        "--out", 
+        type=str, 
+        default="repo_prompt.txt", 
+        help="The name of the generated output file."
+    )
+    
+    parser.add_argument(
+        "--max-tokens", 
+        type=int, 
+        default=128000, 
+        help="Warning threshold for token count (default: 128,000 for standard context windows)."
+    )
+    
+    args = parser.parse_args()
+    
+    # 2. Resolve directory and validate
+    root_dir = Path(args.directory).resolve()
+    
+    if not root_dir.is_dir():
+        print(f"❌ Error: Directory '{root_dir}' does not exist.")
+        sys.exit(1)
+        
+    print(f"🔍 Crawling repository at: {root_dir}")
+    valid_files = crawl_repository(str(root_dir))
+    
+    print(f"📄 Found {len(valid_files)} valid text files to process.")
+    
+    # 3. Format the Output
+    if args.format == "markdown":
+        output_text = to_markdown(root_dir, valid_files)
+    else:
+        output_text = to_xml(root_dir, valid_files)
+        
+    # 4. Token Estimation
+    print("⏳ Estimating token count...")
+    token_count = estimate_tokens(output_text)
+    
+    print(f"\n📊 Total estimated tokens: {token_count:,}")
+    
+    # 5. Token Limit Warning
+    if token_count > args.max_tokens:
+        print(f"\n⚠️ WARNING: Token count ({token_count:,}) exceeds your max-tokens limit ({args.max_tokens:,}).")
+        print("This might be too large for your LLM's context window. Consider pruning large files or adding them to your .gitignore.")
+        
+    # 6. Save the Output
+    out_path = Path(args.out).resolve()
+    try:
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(output_text)
+        print(f"\n✅ Success! Prompt successfully written to {out_path}")
+    except Exception as e:
+        print(f"\n❌ Error writing output file: {str(e)}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+]]>
+    </file>
+
+    <file path="repo2llm/crawler.py">
+<![CDATA[
+import os
+from pathlib import Path
+import pathspec
+
+# Default directories and files to always ignore to save tokens
+DEFAULT_IGNORES = [
+    '.git', '.svn', '.hg',
+
+    'node_modules',
+    'venv',
+    'env',
+    '.env',
+
+    '__pycache__',
+    '.pytest_cache',
+
+    'package-lock.json',
+    'yarn.lock',
+    'pnpm-lock.yaml',
+
+    # Generated by repo2llm itself
+    'repo_prompt.txt'
+]
+BINARY_EXTENSIONS = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+
+    ".pdf",
+    ".zip",
+    ".rar",
+    ".7z",
+
+    ".exe",
+    ".dll",
+
+    ".mp4",
+    ".mp3",
+}
+MAX_FILE_SIZE = 1_000_000
+def is_binary(file_path: Path) -> bool:
+
+    if file_path.suffix.lower() in BINARY_EXTENSIONS:
+        return True
+
+    try:
+        with open(file_path, 'rb') as f:
+            chunk = f.read(1024)
+
+            return b'\0' in chunk
+
+    except Exception:
+        return True
+
+def get_gitignore_spec(root_dir: Path) -> pathspec.PathSpec:
+    """
+    Reads the .gitignore file and returns a pathspec object for filtering.
+    """
+    gitignore_path = root_dir / '.gitignore'
+    lines = []
+    
+    if gitignore_path.exists():
+        # ADDED: errors='ignore' prevents crashes if the .gitignore has weird characters
+        with open(gitignore_path, 'r', encoding='utf-8', errors='ignore') as f:
+            lines = f.readlines()
+            
+    # Add our default ignores to the spec
+    lines.extend(DEFAULT_IGNORES)
+    
+    return pathspec.PathSpec.from_lines(pathspec.patterns.GitWildMatchPattern, lines)
+
+
+def crawl_repository(root_dir: str) -> list[Path]:
+    """
+    Walks the repository, yielding file paths that are NOT ignored and NOT binary.
+    """
+    root_path = Path(root_dir).resolve()
+    ignore_spec = get_gitignore_spec(root_path)
+    
+    valid_files = []
+    
+    for current_dir, dirs, files in os.walk(root_path):
+        current_path = Path(current_dir)
+        
+        # Calculate the relative path from the root for .gitignore matching
+        rel_dir = current_path.relative_to(root_path)
+        
+        # FIX 1: Add a trailing slash for directories and force POSIX format (forward slashes)
+        dirs[:] = [
+            d for d in dirs 
+            if not ignore_spec.match_file(f"{(rel_dir / d).as_posix()}/")
+        ]
+        
+        for file in files:
+            file_path = current_path / file
+            rel_file_path = file_path.relative_to(root_path)
+            
+            # FIX 2: Force POSIX format for files so Windows backslashes don't break the regex
+            if ignore_spec.match_file(rel_file_path.as_posix()):
+                continue
+                
+            # Skip huge files
+            if file_path.stat().st_size > MAX_FILE_SIZE:
+                continue
+
+            # Skip binary files
+            if is_binary(file_path):
+                continue
+
+            valid_files.append(file_path)
+            
+    return valid_files
+
+# --- Quick Test ---
+if __name__ == "__main__":
+    # Run this file directly to test the crawler on its own directory
+    test_dir = "."
+    print(f"Crawling {test_dir}...")
+    files = crawl_repository(test_dir)
+    for f in files:
+        print(f.relative_to(Path(test_dir).resolve()))
+]]>
+    </file>
+
+    <file path="repo2llm/formatter.py">
+<![CDATA[
+import html
+from pathlib import Path
+
+def generate_file_tree(root_dir: Path, valid_files: list[Path]) -> str:
+    """
+    Generates a text-based folder structure tree to help the LLM visualize the repository.
+    Only includes the files that passed through our crawler filters.
+    """
+    tree_lines = []
+    # Sort paths so the tree looks neat and orderly
+    sorted_files = sorted(valid_files)
+    
+    # Track paths we've seen to build the visual hierarchy
+    seen_prefixes = set()
+    
+    tree_lines.append(f"{root_dir.name}/")
+    
+    for file_path in sorted_files:
+        # Get path relative to the root
+        rel_path = file_path.relative_to(root_dir)
+        parts = rel_path.parts
+        
+        for i in range(len(parts)):
+            sub_path = Path(*parts[:i+1])
+            if sub_path in seen_prefixes:
+                continue
+                
+            seen_prefixes.add(sub_path)
+            indent = "    " * i
+            
+            if i == len(parts) - 1:
+                # It's a file
+                tree_lines.append(f"{indent}├── {parts[i]}")
+            else:
+                # It's a directory
+                tree_lines.append(f"{indent}├── {parts[i]}/")
+                
+    return "\n".join(tree_lines)
+
+def to_markdown(root_dir: Path, valid_files: list[Path]) -> str:
+    """
+    Formats the files using classic Markdown code blocks.
+    """
+    root_path = Path(root_dir).resolve()
+    output = []
+    
+    # 1. Add the file tree at the very top
+    output.append("# Repository Structure\n")
+    output.append("```text")
+    output.append(generate_file_tree(root_path, valid_files))
+    output.append("```\n")
+    
+    # 2. Append the contents of each file
+    output.append("# File Contents\n")
+    for file_path in valid_files:
+        rel_path = file_path.relative_to(root_path)
+        # Convert windows backslashes to forward slashes for the LLM's readability
+        display_path = str(rel_path).replace("\\", "/")
+
+        safe_path = html.escape(display_path, quote=True)
+
+        output.append(f'    <file path="{safe_path}">')
+        
+        # Use the extension to give Markdown a syntax highlighting hint
+        extension = file_path.suffix.lstrip('.')
+        output.append(f"```{extension}")
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                output.append(f.read())
+        except Exception as e:
+            output.append(f"[Error reading file: {str(e)}]")
+            
+        output.append("```\n")
+        
+    return "\n".join(output)
+
+def to_xml(root_dir: Path, valid_files: list[Path]) -> str:
+    """
+    Formats the files using strict XML tags (highly optimized for Claude models).
+    """
+    root_path = Path(root_dir).resolve()
+    output = []
+    
+    output.append("<repository>")
+    output.append("  <structure>")
+    output.append(generate_file_tree(root_path, valid_files))
+    output.append("  </structure>\n")
+    
+    output.append("  <files>")
+    for file_path in valid_files:
+        rel_path = file_path.relative_to(root_path)
+        display_path = str(rel_path).replace("\\", "/")
+        
+        output.append(f'    <file path="{display_path}">')
+        output.append("<![CDATA[")  # CDATA prevents code characters like < or > from breaking the XML
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+
+                # Prevent accidental CDATA closing
+                content = content.replace(
+                    "]]]]><![CDATA[>",
+                    "]]]]]]><![CDATA[><![CDATA[>"
+                )
+
+                output.append(content)
+
+        except Exception as e:
+            output.append(f"[Error reading file: {str(e)}]")
+            
+        output.append("]]]]><![CDATA[>")
+        output.append("    </file>\n")
+        
+    output.append("  </files>")
+    output.append("</repository>")
+    
+    return "\n".join(output)
+]]>
+    </file>
+
+    <file path="repo2llm/__init__.py">
+<![CDATA[
+
+]]>
+    </file>
+
+    <file path="repo2llm-gui/index.html">
+<![CDATA[
+<!DOCTYPE html>
+<html>
+<head>
+    <title>repo2llm - Codebase Packager</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; background-color: #f4f4f5; color: #18181b; }
+        .container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); max-width: 500px; margin: 0 auto; }
+        h2 { margin-top: 0; }
+        .form-group { margin-bottom: 15px; }
+        button { background: #3b82f6; color: white; border: none; padding: 10px 15px; border-radius: 5px; cursor: pointer; width: 100%; font-size: 16px; }
+        button:hover { background: #2563eb; }
+        #status { margin-top: 15px; font-size: 14px; color: #52525b; white-space: pre-wrap; background: #f8fafc; padding: 10px; border-radius: 4px; display: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>📦 Package Codebase</h2>
+        
+        <div class="form-group">
+            <label>1. Select Repository:</label>
+            <button id="select-folder-btn" style="background: #e2e8f0; color: #000;">Choose Folder...</button>
+            <p id="folder-path" style="font-size: 12px; color: #666;"></p>
+        </div>
+
+        <div class="form-group">
+            <label>2. Output Format:</label>
+            <select id="format-select" style="width: 100%; padding: 8px;">
+                <option value="markdown">Markdown (Best for ChatGPT)</option>
+                <option value="xml">XML (Best for Claude)</option>
+            </select>
+        </div>
+
+        <button id="run-btn">Generate Prompt</button>
+        
+        <div id="status"></div>
+    </div>
+
+    <script src="renderer.js"></script>
+</body>
+</html>
+]]>
+    </file>
+
+    <file path="repo2llm-gui/main.js">
+<![CDATA[
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { spawn } = require('child_process');
+const path = require('path');
+
+let mainWindow;
+
+function createWindow() {
+    mainWindow = new BrowserWindow({
+        width: 600,
+        height: 500,
+        webPreferences: {
+            nodeIntegration: true,
+            contextIsolation: false
+        }
+    });
+
+    mainWindow.loadFile('index.html');
+}
+
+app.whenReady().then(createWindow);
+
+// Listen for the folder picker request
+ipcMain.handle('select-folder', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+        properties: ['openDirectory']
+    });
+    return result.filePaths[0];
+});
+
+// Listen for the "Run" command
+ipcMain.handle('run-repo2llm', async (event, args) => {
+    const { folderPath, format } = args;
+
+    return new Promise((resolve) => {
+
+        const outputPath = path.join(folderPath, 'repo_prompt.txt');
+
+        const child = spawn(
+            'repo2llm',
+            [
+                folderPath,
+                '--format',
+                format,
+                '--out',
+                outputPath
+            ],
+            {
+                env: {
+                    ...process.env,
+                    PYTHONIOENCODING: 'utf-8'
+                }
+            }
+        );
+
+        let output = "";
+        let errorOutput = "";
+
+        child.stdout.on('data', (data) => {
+            output += data.toString();
+        });
+
+        child.stderr.on('data', (data) => {
+            errorOutput += data.toString();
+        });
+
+        child.on('close', (code) => {
+
+            if (code !== 0) {
+                resolve({
+                    success: false,
+                    log: errorOutput || `Exited with code ${code}`
+                });
+                return;
+            }
+
+            resolve({
+                success: true,
+                log: output
+            });
+        });
+    });
+});
+
+app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit();
+});
+]]>
+    </file>
+
+    <file path="repo2llm-gui/package.json">
+<![CDATA[
+{
+  "name": "repo2llm-gui",
+  "version": "1.0.0",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^30.0.0"
+  }
+}
+]]>
+    </file>
+
+    <file path="repo2llm-gui/renderer.js">
+<![CDATA[
+const { ipcRenderer } = require('electron');
+
+let selectedFolder = null;
+
+const selectBtn = document.getElementById('select-folder-btn');
+const folderPathText = document.getElementById('folder-path');
+const runBtn = document.getElementById('run-btn');
+const formatSelect = document.getElementById('format-select');
+const statusDiv = document.getElementById('status');
+
+// Handle Folder Selection
+selectBtn.addEventListener('click', async () => {
+    const folder = await ipcRenderer.invoke('select-folder');
+    if (folder) {
+        selectedFolder = folder;
+        folderPathText.innerText = selectedFolder;
+        statusDiv.style.display = 'none';
+    }
+});
+
+// Handle Run Button
+runBtn.addEventListener('click', async () => {
+    if (!selectedFolder) {
+        alert("Please select a folder first!");
+        return;
+    }
+
+    runBtn.innerText = "Running...";
+    runBtn.disabled = true;
+    statusDiv.style.display = 'block';
+    statusDiv.innerText = "Crawling repository and estimating tokens...";
+
+    const result = await ipcRenderer.invoke('run-repo2llm', {
+        folderPath: selectedFolder,
+        format: formatSelect.value
+    });
+
+    runBtn.innerText = "Generate Prompt";
+    runBtn.disabled = false;
+
+    if (result.success) {
+        statusDiv.style.background = "#dcfce3";
+        statusDiv.innerText = "✅ Success!\n\n" + result.log;
+    } else {
+        statusDiv.style.background = "#fee2e2";
+        statusDiv.innerText = "❌ Error:\n\n" + result.log;
+    }
+});
+]]>
+    </file>
+
+    <file path="repo2llm.egg-info/dependency_links.txt">
+<![CDATA[
+
+
+]]>
+    </file>
+
+    <file path="repo2llm.egg-info/entry_points.txt">
+<![CDATA[
+[console_scripts]
+repo2llm = repo2llm.cli:main
+
+]]>
+    </file>
+
+    <file path="repo2llm.egg-info/PKG-INFO">
+<![CDATA[
+Metadata-Version: 2.4
+Name: repo2llm
+Version: 0.1.0
+Summary: Package your entire codebase into a single, LLM-friendly prompt.
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: pathspec>=0.11.0
+Requires-Dist: tiktoken>=0.6.0
+
+# repo2llm 🚀
+
+A lightning-fast CLI utility that packages your entire local repository into a single, highly-compressed text file optimized for massive-context LLMs (like Claude 3.5 Sonnet and GPT-4o).
+
+## Features
+- **Smart Ignore:** Automatically respects your `.gitignore` and strips out bloat (`node_modules`, `.venv`, etc.).
+- **Binary Filtering:** Safely ignores images and compiled binaries.
+- **Visual File Tree:** Injects a macro-level directory map at the top of the prompt to help the LLM understand your architecture.
+- **Format Toggles:** Outputs in Markdown (for GPT) or strict XML (for Claude).
+
+## Installation
+```bash
+pip install repo2llm
+
+# Package the current directory
+repo2llm .
+
+# Package for Claude (uses XML)
+repo2llm . --format xml --out claude_prompt.xml
+
+]]>
+    </file>
+
+    <file path="repo2llm.egg-info/requires.txt">
+<![CDATA[
+pathspec>=0.11.0
+tiktoken>=0.6.0
+
+]]>
+    </file>
+
+    <file path="repo2llm.egg-info/SOURCES.txt">
+<![CDATA[
+README.md
+pyproject.toml
+repo2llm/__init__.py
+repo2llm/cli.py
+repo2llm/crawler.py
+repo2llm/formatter.py
+repo2llm.egg-info/PKG-INFO
+repo2llm.egg-info/SOURCES.txt
+repo2llm.egg-info/dependency_links.txt
+repo2llm.egg-info/entry_points.txt
+repo2llm.egg-info/requires.txt
+repo2llm.egg-info/top_level.txt
+]]>
+    </file>
+
+    <file path="repo2llm.egg-info/top_level.txt">
+<![CDATA[
+repo2llm
+
+]]>
+    </file>
+
+  </files>
+</repository>
